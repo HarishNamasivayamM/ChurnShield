@@ -31,16 +31,27 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
 
       - name: Lint
-        run: ruff check kafka_producer_churn.py tests
+        run: ruff check .
 
       - name: Check formatting
-        run: ruff format --check kafka_producer_churn.py tests
+        run: ruff format --check .
 
       - name: Run tests
         run: python -m unittest discover -s tests -v
 
       - name: Validate bundled dataset
         run: python kafka_producer_churn.py --dry-run --limit 3
+
+      - name: Run batch pipeline
+        if: matrix.python-version == '3.13'
+        run: python run_pipeline.py --input churn_dataset.csv --output-dir artifacts/ci --estimators 30
+
+      - name: Verify installed entry points
+        if: matrix.python-version == '3.13'
+        run: |
+          python -m pip install -e . --no-deps
+          churn-pipeline --help
+          python snowflake_loader.py --input artifacts/ci/predictions.csv --dry-run
 
       - name: Validate Compose configuration
         if: matrix.python-version == '3.13'

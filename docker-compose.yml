@@ -68,3 +68,20 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+
+  trainer:
+    build: .
+    profiles: ["pipeline"]
+    command: ["python", "train_model.py", "--input", "/app/churn_dataset.csv", "--output-dir", "/app/artifacts"]
+    volumes:
+      - ./artifacts:/app/artifacts
+
+  consumer:
+    build: .
+    profiles: ["pipeline"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: ["python", "kafka_consumer_churn.py", "--bootstrap-servers", "kafka:29092", "--topic", "customer_events", "--model", "/app/artifacts/model.joblib", "--output", "/app/artifacts/stream_predictions.csv", "--from-beginning", "--idle-timeout-ms", "30000"]
+    volumes:
+      - ./artifacts:/app/artifacts

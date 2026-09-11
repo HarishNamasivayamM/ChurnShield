@@ -1,50 +1,59 @@
 # ChurnStream
 
-ChurnStream publishes the supplied Telco customer dataset to Kafka as JSON
-events. The repository also contains Snowflake SQL and Power BI/Word/PDF
-reference artifacts for the broader churn-analysis workflow.
-
-The runnable local path is:
+ChurnStream is an end-to-end customer-churn pipeline built around the supplied
+Telco Customer Churn dataset. It supports a reproducible local batch workflow,
+Kafka event publishing and scoring, and optional Snowflake/Power BI handoff.
 
 ```text
-churn_dataset.csv -> kafka_producer_churn.py -> Kafka topic customer_events
+churn_dataset.csv
+       |
+       +--> train_model.py --> artifacts/model.joblib + metrics.json
+       |                                  |
+       +--> run_pipeline.py --> predictions.csv
+       |
+       +--> Kafka customer_events --> kafka_consumer_churn.py
+                                             |
+                                             +--> stream_predictions.csv
 ```
 
-Snowflake ingestion, model training, and Power BI refresh require external
-services and credentials. The source tree does not contain a Snowflake
-connector configuration with credentials or an ML training script, so those
-steps are intentionally optional rather than implied by the local quick start.
+The local path does not require Kafka, Snowflake, or Power BI. External
+services are explicit adapters and require the user's own credentials and
+connector installation.
 
 ## Implementation status
 
 Implemented and tested in this repository:
 
-- CSV validation and JSON normalization
-- Host-to-container Kafka publishing
-- Single-broker Kafka and Kafka Connect Compose configuration
-- Snowflake table/view definitions
-- Offline producer tests and GitHub Actions CI
+- CSV validation, type normalization, and JSON-safe Kafka publishing
+- Reproducible Random Forest training with preprocessing and holdout metrics
+- Saved model bundle, batch predictions, risk levels, and ranked rule-based
+  risk factors
+- Kafka consumer that scores incoming customer events and appends predictions
+- Single-broker Kafka and Kafka Connect Docker Compose configuration
+- Snowflake DDL and a connector configuration template with no credentials
+- Power BI handoff instructions and GitHub Actions CI
 
-Not included in this repository:
+Not bundled:
 
-- A Snowflake sink connector binary or credentials
-- Model training, inference, or SHAP scoring code
-- A live Power BI connection or refresh service
+- A Snowflake sink connector binary, Snowflake account, or credentials
+- SHAP explanations; `RISK_FACTORS` are transparent business rules ranked by
+  grouped model feature importance
+- An automatically refreshed or published Power BI report
 
-The supplied Power BI, PDF, and Word files are reference/report artifacts.
-The source-code license does not automatically grant redistribution rights for
+The supplied Power BI, PDF, and Word files are reference/report artifacts. The
+source-code license does not automatically grant redistribution rights for
 those artifacts or the bundled dataset; see
 [`DATA-AND-REPORT-NOTICE.md`](DATA-AND-REPORT-NOTICE.md).
 
 ## Requirements
 
 - Python 3.10 or newer
-- Docker Desktop with Docker Compose v2 for local Kafka
+- Docker Desktop with Docker Compose v2 for the Kafka path
 - A Snowflake account only if the optional warehouse step is needed
 
-## Local quick start
+## Local batch quick start
 
-Create a virtual environment and install the only runtime dependency:
+Create a virtual environment and install the runtime dependencies:
 
 ```bash
 python -m venv .venv
@@ -53,50 +62,73 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-Start the single-broker Kafka and Kafka Connect services:
+Train, evaluate, and score all supplied customer rows:
+
+```bash
+python run_pipeline.py --input churn_dataset.csv --output-dir artifacts
+```
+
+The command writes:
+
+- `artifacts/model.joblib` - preprocessing and classifier bundle
+- `artifacts/metrics.json` - accuracy, precision, recall, F1, ROC AUC, and
+  grouped feature importance
+- `artifacts/predictions.csv` - BI-friendly scored customer records
+
+For separate training and scoring entry points:
+
+```bash
+python train_model.py --input churn_dataset.csv --output-dir artifacts
+```
+
+The installed package also exposes `churn-pipeline`, `churn-train`,
+`churn-consumer`, and `churn-producer` commands after `python -m pip install -e .`.
+
+## Kafka streaming path
+
+Start Kafka and Kafka Connect:
 
 ```bash
 docker compose up -d
 docker compose ps
 ```
 
-Validate the dataset without needing Kafka:
+Train a model locally, then publish a small smoke-test batch:
 
 ```bash
-python kafka_producer_churn.py --dry-run --limit 3
+python train_model.py --input churn_dataset.csv --output-dir artifacts
+python kafka_producer_churn.py --limit 100 --rate 20 --topic customer_events
 ```
 
-Publish all 7,043 rows to the default topic:
+In another terminal, consume and score those events:
 
 ```bash
-python kafka_producer_churn.py --rate 20
-```
-
-For a small smoke test, publish only ten rows:
-
-```bash
-python kafka_producer_churn.py --limit 10 --topic customer_events
-```
-
-Consume a few messages from another terminal:
-
-```bash
-docker compose exec kafka kafka-console-consumer \
-  --bootstrap-server kafka:29092 \
+python kafka_consumer_churn.py \
+  --bootstrap-servers localhost:9092 \
   --topic customer_events \
+  --model artifacts/model.joblib \
+  --output artifacts/stream_predictions.csv \
   --from-beginning \
-  --max-messages 3
+  --group-id churnstream-local \
+  --max-messages 100
 ```
 
-Host-side clients use `localhost:9092`; containers use `kafka:29092`. This
-two-listener setup is required so both the Python producer and Kafka Connect
-can reach the same broker.
+The consumer appends scored rows to `artifacts/stream_predictions.csv`.
+Use a new `--group-id` with `--from-beginning` when replaying a topic. Host
+clients use `localhost:9092`; containers use `kafka:29092`.
 
-Stop the services when finished:
+The same path can be run with the application image. The `pipeline` Compose
+profile provides a trainer and a container-network Kafka consumer:
 
 ```bash
-docker compose down
+docker compose --profile pipeline build
+docker compose --profile pipeline run --rm trainer
+python kafka_producer_churn.py --limit 100 --rate 20 --topic customer_events
+docker compose --profile pipeline run --rm consumer
 ```
+
+Generated files are written to the host `artifacts/` directory and are
+ignored by Git.
 
 ## Producer options
 
@@ -111,8 +143,8 @@ docker compose down
 ```
 
 The same settings can be provided with `KAFKA_BOOTSTRAP_SERVERS` and
-`KAFKA_TOPIC`. `.env.example` documents the supported environment values;
-the producer does not load a `.env` file automatically.
+`KAFKA_TOPIC`. `.env.example` documents supported environment values; the
+producer does not load a `.env` file automatically.
 
 The producer strips whitespace, converts `SeniorCitizen` and `tenure` to
 integers, converts charge fields to numbers, and turns blank values into JSON
@@ -120,19 +152,58 @@ integers, converts charge fields to numbers, and turns blank values into JSON
 supplied dataset without emitting invalid JSON `NaN` values. Messages use
 `customerID` as their Kafka key.
 
-## Snowflake setup
+## Snowflake handoff
 
 Run [`sql/001_snowflake_setup.sql`](sql/001_snowflake_setup.sql) in Snowflake
-to create the `CHURN_ANALYSIS` database, `RAW_DATA`, `FEATURES`, and
-`PREDICTIONS` schemas, plus example landing, feature, and prediction tables.
+to create the `CHURN_ANALYSIS` database and its raw, feature, and prediction
+tables/views. The prediction table matches the columns produced by the local
+scoring path.
 
-The Kafka Connect service is ready on `http://localhost:8083`, but the base
-image does not include the Snowflake sink connector. Install a compatible
-Snowflake connector distribution into `connect-plugins/` and create the sink
-connector through the Connect REST API. Keep connector binaries and all
-credentials out of source control.
+The Kafka Connect service is available at `http://localhost:8083`, but the
+base image does not include the Snowflake sink connector. Obtain a compatible
+connector distribution from Snowflake, place its files under
+`connect-plugins/`, and restart Connect. Then adapt
+[`config/snowflake-connector.example.json`](config/snowflake-connector.example.json)
+and submit it to the Connect REST API:
 
-## Tests
+```bash
+curl -X POST http://localhost:8083/connectors \
+  -H "Content-Type: application/json" \
+  --data @config/snowflake-connector.example.json
+```
+
+The example uses a private-key placeholder. Keep private keys, passwords, and
+account identifiers outside GitHub and use the connector's supported secret
+management approach. For optional Python-side Snowflake work, install
+`requirements-snowflake.txt`; it is not needed for local training or scoring.
+
+To load local scored predictions into the Snowflake prediction table, install
+the optional requirements and set `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, and
+`SNOWFLAKE_PASSWORD` (plus warehouse/role variables when required):
+
+```bash
+python -m pip install -r requirements-snowflake.txt
+python snowflake_loader.py --input artifacts/predictions.csv
+```
+
+Validate the file and SQL target without connecting by adding `--dry-run`.
+The loader uses batched inserts and parses `RISK_FACTORS` into Snowflake
+`VARIANT` values.
+
+## Power BI
+
+Import `artifacts/predictions.csv` into Power BI Desktop for a local report,
+or connect Power BI to `CHURN_ANALYSIS.PREDICTIONS.CHURN_PREDICTIONS` after
+loading scored rows into Snowflake. See
+[`powerbi/README.md`](powerbi/README.md) for the output contract and the
+important PBIX rebinding note.
+
+The supplied `Churn Analysis project.pbix` is a reference snapshot whose model
+table is named `churn_dataset`; it is not automatically rebound to generated
+predictions. `Project_steps.docx` is an earlier walkthrough and mentions the
+old topic name `my_kafka_topic`; the current topic is `customer_events`.
+
+## Tests and CI
 
 The test suite does not require Kafka:
 
@@ -140,32 +211,21 @@ The test suite does not require Kafka:
 python -m unittest discover -s tests -v
 ```
 
-The project also supports an editable install, which exposes a
-`churn-producer` command:
+Run the same checks locally as CI:
 
 ```bash
-python -m pip install -e .
-churn-producer --dry-run --limit 3
+python -m pip install -r requirements-dev.txt
+ruff check .
+ruff format --check .
 ```
 
-## Supplied report artifacts
-
-- `Churn Analysis project.pbix` is a Power BI report package.
-- `PowerBiReport.pdf` is an exported report snapshot.
-- `Churn_Analysis_Report.docx` and `Project_steps.docx` are narrative/reference documents.
-
-The PBIX package is structurally valid and its layout references a model
-table named `churn_dataset`. Its package metadata contains Power BI remote
-artifact IDs rather than a visible Snowflake connection, so configure the
-data source in Power BI Desktop when moving the report to a Snowflake-backed
-model. `Project_steps.docx` is an earlier walkthrough and mentions the old
-topic name `my_kafka_topic`; use `customer_events` from this README and the
-producer as the current topic. These files are not required to run the local
-Kafka producer.
+GitHub Actions tests Python 3.10 through 3.13, validates the dataset, runs the
+batch pipeline, and checks the Compose configuration. Docker is not required
+for the local unit tests, but is required for the Kafka services.
 
 ## Data source
 
 `churn_dataset.csv` contains 7,043 customer records and 21 columns from the
-standard Telco Customer Churn dataset. `Churn` is the historical label; the
-producer sends it as part of each event for downstream loading or offline
-training.
+standard Telco Customer Churn dataset. `Churn` is the historical label used
+for offline training; the producer includes it in each event for downstream
+loading or replayable experiments.

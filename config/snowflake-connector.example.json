@@ -1,0 +1,22 @@
+{
+  "name": "churnstream-snowflake-sink",
+  "config": {
+    "connector.class": "com.snowflake.kafka.connector.SnowflakeStreamingSinkConnector",
+    "tasks.max": "1",
+    "topics": "customer_events",
+    "snowflake.topic2table.map": "customer_events:CUSTOMER_EVENTS",
+    "snowflake.url.name": "https://<ACCOUNT_IDENTIFIER>.snowflakecomputing.com",
+    "snowflake.user.name": "<SNOWFLAKE_USER>",
+    "snowflake.private.key": "<BASE64_ENCODED_PKCS8_PRIVATE_KEY>",
+    "snowflake.database.name": "CHURN_ANALYSIS",
+    "snowflake.schema.name": "RAW_DATA",
+    "snowflake.role.name": "<ROLE>",
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false",
+    "snowflake.enable.schematization": "false",
+    "errors.log.enable": "true",
+    "errors.tolerance": "none",
+    "snowflake.streaming.validate.compatibility.with.classic": "false"
+  }
+}
