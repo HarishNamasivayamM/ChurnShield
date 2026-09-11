@@ -1,8 +1,10 @@
-# ChurnStream
+# ChurnShield
 
-ChurnStream is an end-to-end customer-churn pipeline built around the supplied
-Telco Customer Churn dataset. It supports a reproducible local batch workflow,
-Kafka event publishing and scoring, and optional Snowflake/Power BI handoff.
+ChurnShield is an end-to-end customer-churn pipeline built around the supplied
+Telco Customer Churn dataset. The executable pipeline package retains the
+`churnstream` module name for compatibility. It supports a reproducible local
+batch workflow, Kafka event publishing and scoring, and optional
+Snowflake/Power BI handoff.
 
 ```text
 churn_dataset.csv
@@ -202,6 +204,19 @@ The supplied `Churn Analysis project.pbix` is a reference snapshot whose model
 table is named `churn_dataset`; it is not automatically rebound to generated
 predictions. `Project_steps.docx` is an earlier walkthrough and mentions the
 old topic name `my_kafka_topic`; the current topic is `customer_events`.
+
+### Shared dashboard assets
+
+The repository includes the requested BI deliverables:
+
+- `Churn Analysis project.pbix` - editable Power BI report package
+- `PowerBiReport.pdf` - exported dashboard snapshot for quick review
+- `Churn_Analysis_Report.docx` - written analysis/report companion
+- `powerbi/README.md` - instructions for connecting the report to predictions
+
+The generated `artifacts/predictions.csv` is intentionally ignored by Git
+because it is reproducible output. Generate it with `python run_pipeline.py`
+before importing it into Power BI.
 
 ## Tests and CI
 
